@@ -1,3 +1,4 @@
+```markdown
 ---
 title: "Предиктивный контроль качества стекла по химическому составу"
 author: "Data Analysis Portfolio"
@@ -462,3 +463,14 @@ summary_tbl %>%
 
 **Технологии:** R, caret, tidyverse, ggplot2, randomForest, e1071, nnet, kernlab, patchwork
 ```
+
+---
+
+## 📋 Что нужно сделать после вставки
+
+1. **Скачай `glass.csv`** с Kaggle: https://www.kaggle.com/datasets/uciml/glass
+2. **Положи файл** в `01-glass-classification/data/glass.csv`
+3. **Открой `.Rmd` в RStudio** и нажми **Knit** — получишь `analysis.html` и 8 графиков в `output/`
+4. **Загрузи на GitHub** сам `.Rmd`, полученный `.html` и все PNG из `output/`
+
+**Важно:** когда будешь запускать локально, RStudio сам создаст папку `output/` и положит туда все графики. Датасет на GitHub **не нужен** — в коде есть инструкция для зрителя, где его взять.
