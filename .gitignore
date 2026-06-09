@@ -1,1 +1,13 @@
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj.user/
 
+*.tmp
+*.log
+
+.DS_Store
+Thumbs.db
+
+__pycache__/
+*.pyc
