@@ -1,17 +1,15 @@
-```markdown
 ---
 title: "Предиктивный контроль качества стекла по химическому составу"
 author: "Data Analysis Portfolio"
 date: "2026"
 output:
-  html_document:
-    toc: true
-    toc_float: true
-    theme: flatly
-    highlight: tango
-    code_folding: hide
+ html_document:
+ toc: true
+ toc_float: true
+ theme: flatly
+ highlight: tango
+ code_folding: hide
 ---
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
   echo = TRUE,
@@ -22,18 +20,13 @@ knitr::opts_chunk$set(
   out.width = "100%"
 )
 ```
-
 ## О задаче
-
 Автоматическая классификация 7 типов стекла (оконное, автомобильное, контейнерное и т.д.) по 9 химическим параметрам. Применимо в системах контроля качества на стекольном производстве.
-
-**Данные:** [UCI Glass Identification Dataset](https://www.kaggle.com/datasets/uciml/glass) — 214 образцов, 9 признаков (Na, Mg, Al, Si, K, Ca, Ba, Fe + показатель преломления).
-
-**Подход:**
+Данные: UCI Glass Identification Dataset — 214 образцов, 9 признаков (Na, Mg, Al, Si, K, Ca, Ba, Fe + показатель преломления).
+Подход:
 - 5 моделей с 10-fold cross-validation (GLM, CART, Random Forest, SVM, Neural Network)
 - Grid search для подбора гиперпараметров
-- **Бизнес-оценка** через Profit Curve с учётом стоимости ошибок
-
+- Бизнес-оценка через Profit Curve с учётом стоимости ошибок
 ```{r libraries}
 # Установка пакетов (выполнить один раз при первом запуске):
 # install.packages(c("tidyverse", "caret", "randomForest", "rpart", 
@@ -50,40 +43,33 @@ library(kernlab)
 library(patchwork)
 library(kableExtra)
 
-# Создаём папку для сохранения графиков
 if (!dir.exists("output")) dir.create("output")
-
 set.seed(123)
+
+# Хелперы форматирования чисел
+fmt_acc <- function(x) sprintf("%.1f%%", x * 100)
+fmt_kap <- function(x) sprintf("%.2f", x)
+fmt_prof <- function(x) sprintf("~%.0f", x)
+fmt_lift <- function(x) sprintf("%.1f", x)
+fmt_pct <- function(x) sprintf("%.0f", x)
 ```
-
 ## 1. Загрузка и предобработка данных
-
-> **Примечание:** датасет не включён в репозиторий. Скачайте `glass.csv` с [Kaggle](https://www.kaggle.com/datasets/uciml/glass) и поместите в папку `data/` рядом с этим файлом.
-
+> Примечание: датасет не включён в репозиторий. Скачайте glass.csv с Kaggle и поместите в папку data/ рядом с этим файлом.
 ```{r data-loading}
-# Проверяем наличие файла
 if (!file.exists("data/glass.csv")) {
   stop("Файл data/glass.csv не найден. Скачайте датасет с Kaggle и поместите в папку data/")
 }
 
 glass <- read.csv("data/glass.csv")
-
-# Удаляем ID-колонку, если она есть
 if ("Id" %in% colnames(glass)) glass$Id <- NULL
 if ("X" %in% colnames(glass)) glass$X <- NULL
 
-# Преобразуем целевую переменную в фактор и переименовываем классы
 glass$Type <- as.factor(glass$Type)
 levels(glass$Type) <- paste0("G", levels(glass$Type))
 
-cat("Распределение классов:\n")
-print(table(glass$Type))
-
-# Стандартизация (нужна для SVM, NN, GLM)
 preproc <- preProcess(glass, method = c("center", "scale"))
 glass_scaled <- predict(preproc, glass)
 
-# Разделение на train/test (75/25) с сохранением баланса классов
 split_index <- createDataPartition(glass$Type, p = 0.75, list = FALSE)
 train_data <- glass[split_index, ]
 test_data  <- glass[-split_index, ]
@@ -92,7 +78,6 @@ split_index_scaled <- createDataPartition(glass_scaled$Type, p = 0.75, list = FA
 train_data_scaled <- glass_scaled[split_index_scaled, ]
 test_data_scaled <- glass_scaled[-split_index_scaled, ]
 
-# Параметры 10-fold cross-validation
 ctrl <- trainControl(
   method = "cv",
   number = 10,
@@ -100,30 +85,23 @@ ctrl <- trainControl(
   summaryFunction = multiClassSummary
 )
 ```
-
 ## 2. Обучение моделей
-
 Обучаем 5 моделей с подбором оптимальных гиперпараметров через grid search.
-
 ```{r models-training, results='hide'}
 formula <- Type ~ .
 
-# 1. Multinomial Logistic Regression
 glm_grid <- expand.grid(decay = seq(from = 1e-05, to = 5e-04, by = 1e-05))
 model_glm <- train(formula, data = train_data_scaled, method = "multinom",
                    trControl = ctrl, trace = FALSE, tuneGrid = glm_grid)
 
-# 2. Decision Tree (CART)
 rpart_grid <- expand.grid(cp = seq(from = 0.001, to = 0.075, by = 0.001))
 model_rpart <- train(formula, data = train_data, method = "rpart",
                      trControl = ctrl, tuneGrid = rpart_grid)
 
-# 3. Random Forest
 rf_grid <- expand.grid(mtry = seq(from = 1, to = 4, by = 0.05))
 model_rf <- train(formula, data = train_data, method = "rf",
                   trControl = ctrl, tuneGrid = rf_grid, ntree = 500)
 
-# 4. SVM с радиальным ядром
 svm_grid <- expand.grid(
   sigma = seq(from = 0.5, to = 5, by = 0.5),
   C = seq(from = 0.1, to = 1, by = 0.1)
@@ -131,7 +109,6 @@ svm_grid <- expand.grid(
 model_svm <- train(formula, data = train_data_scaled, method = "svmRadial",
                    trControl = ctrl, tuneGrid = svm_grid, maxit = 1000)
 
-# 5. Neural Network
 nn_grid <- expand.grid(
   size = seq(from = 15, to = 65, by = 10),
   decay = seq(from = 0.01, to = 0.1, by = 0.01)
@@ -139,9 +116,7 @@ nn_grid <- expand.grid(
 model_nnet <- train(formula, data = train_data_scaled, method = "nnet",
                     trControl = ctrl, trace = FALSE, tuneGrid = nn_grid, maxit = 1000)
 ```
-
 ### Оптимальные гиперпараметры
-
 ```{r best-params}
 best_params <- tibble(
   Model = c("Logistic Regression", "Decision Tree", "Random Forest", 
@@ -156,16 +131,14 @@ best_params %>%
   kable(caption = "Оптимальные гиперпараметры после grid search", digits = 4) %>%
   kable_styling(bootstrap_options = c("striped", "hover"))
 ```
-
-**Интерпретация:**
-- **Logistic Regression** (decay ≈ 0.0001): низкая регуляризация → модель не склонна к переобучению
-- **Decision Tree** (cp ≈ 0.05): компактное дерево с ограниченной глубиной
-- **Random Forest** (mtry ≈ 2): малое подмножество признаков на каждом разбиении повышает разнообразие ансамбля
-- **SVM** (sigma = 0.5, C = 0.2): умеренно нелинейная граница с допущением ошибок
-- **Neural Network** (size = 25, decay = 0.03): сбалансированная ёмкость + регуляризация
+Интерпретация:
+- Logistic Regression (decay = `r sprintf("%.4f", best_params$Parameter_1[1])`): низкая регуляризация
+- Decision Tree (cp = `r round(best_params$Parameter_1[2], 3)`): компактное дерево
+- Random Forest (mtry = `r round(best_params$Parameter_1[3], 2)`): малое подмножество признаков
+- SVM (sigma = `r best_params$Parameter_1[4]`, C = `r best_params$Parameter_2[4]`): умеренно нелинейная граница
+- Neural Network (size = `r best_params$Parameter_1[5]`, decay = `r best_params$Parameter_2[5]`): сбалансированная ёмкость
 
 ## 3. Сравнение моделей (Accuracy и Kappa)
-
 ```{r model-comparison}
 results_list <- list(
   GLM   = model_glm,
@@ -177,7 +150,6 @@ results_list <- list(
 
 resamples <- resamples(results_list)
 
-# Данные для графиков Accuracy
 acc_data <- resamples$values %>%
   select(Resample, contains("~Accuracy")) %>%
   pivot_longer(
@@ -189,7 +161,6 @@ acc_data <- resamples$values %>%
   filter(Metric == "Accuracy") %>%
   mutate(Model = trimws(Model))
 
-# Данные для графиков Kappa
 kappa_data <- resamples$values %>%
   select(Resample, contains("~Kappa")) %>%
   pivot_longer(
@@ -201,7 +172,6 @@ kappa_data <- resamples$values %>%
   filter(Metric == "Kappa") %>%
   mutate(Model = trimws(Model))
 
-# Boxplot: Accuracy
 p_acc <- ggplot(acc_data, aes(x = Model, y = Value, fill = Model)) +
   geom_boxplot(alpha = 0.7) +
   geom_jitter(width = 0.15, alpha = 0.5, size = 1) +
@@ -211,7 +181,6 @@ p_acc <- ggplot(acc_data, aes(x = Model, y = Value, fill = Model)) +
   theme(legend.position = "none",
         axis.text.x = element_text(angle = 45, hjust = 1))
 
-# Boxplot: Kappa
 p_kappa <- ggplot(kappa_data, aes(x = Model, y = Value, fill = Model)) +
   geom_boxplot(alpha = 0.7) +
   geom_jitter(width = 0.15, alpha = 0.5, size = 1) +
@@ -227,7 +196,24 @@ ggsave("output/accuracy_boxplot.png", p_acc, width = 8, height = 5, dpi = 150)
 ggsave("output/kappa_boxplot.png", p_kappa, width = 8, height = 5, dpi = 150)
 ```
 
-**Вывод:** Random Forest и Neural Network показывают наилучшую точность (~75-80%), значительно превосходя линейные методы. SVM и GLM отстают из-за нелинейной природы зависимостей в данных.
+```{r extract-cv-metrics, include=FALSE}
+# Средние метрики CV по всем моделям
+acc_means <- sapply(c("GLM", "RPART", "RF", "SVM", "NN"), function(m) {
+  mean(resamples$values[[paste0(m, "~Accuracy")]], na.rm = TRUE)
+})
+kap_means <- sapply(c("GLM", "RPART", "RF", "SVM", "NN"), function(m) {
+  mean(resamples$values[[paste0(m, "~Kappa")]], na.rm = TRUE)
+})
+
+names(acc_means) <- names(kap_means) <- c("GLM", "RPART", "RF", "SVM", "NN")
+
+# Топ-2 модели по Accuracy
+top2_models <- names(sort(acc_means, decreasing = TRUE))[1:2]
+top2_acc_range <- sprintf("~%.0f-%.0f%%", 
+                          min(acc_means[top2_models]) * 100, 
+                          max(acc_means[top2_models]) * 100)
+```
+Вывод: `r paste(top2_models, collapse = " и ")` показывают наилучшую точность (`r top2_acc_range`), значительно превосходя линейные методы. SVM и GLM отстают из-за нелинейной природы зависимостей в данных.
 
 ## 4. Lift, Gain и Profit кривые
 
@@ -245,11 +231,8 @@ test_eval_RF <- test_data %>%
   mutate(pred_class = predict(model_rf, test_data)) %>%
   bind_cols(as.data.frame(pred_probs_RF) %>% rename_with(~ paste0("prob_", .)))
 ```
-
 ### 4.2. Функции построения кривых
-
 ```{r curve-functions}
-# Lift и Gain кривые
 plot_lift_gain <- function(data, prob_col, actual_col, class_label) {
   data <- data %>%
     mutate(actual_binary = ifelse({{actual_col}} == class_label, 1, 0),
@@ -285,7 +268,6 @@ plot_lift_gain <- function(data, prob_col, actual_col, class_label) {
   return(list(gain = p_gain, lift = p_lift))
 }
 
-# Profit Curve с учётом стоимости ошибок
 plot_profit_curve <- function(data, prob_col, actual_col, class_label,
                               profit_tp = 10, cost_fp = -2, cost_fn = -5) {
   profit_data <- data %>%
@@ -323,7 +305,6 @@ plot_profit_curve <- function(data, prob_col, actual_col, class_label,
   return(list(profit = p_profit, data = profit_results))
 }
 
-# Сравнение двух моделей на одном графике
 compare_curves <- function(plot1, plot2, name1, name2, title, x_label, y_label) {
   data1 <- ggplot2::ggplot_build(plot1)$data[[1]]
   data2 <- ggplot2::ggplot_build(plot2)$data[[1]]
@@ -344,10 +325,24 @@ compare_curves <- function(plot1, plot2, name1, name2, title, x_label, y_label) 
       legend.position = "top"
     )
 }
+
+# Хелперы для извлечения метрик из ggplot-объектов
+extract_gain_at <- function(gain_plot, pct) {
+  d <- ggplot_build(gain_plot)$data[[1]]
+  d$y[which.min(abs(d$x - pct))]
+}
+
+extract_max_lift <- function(lift_plot) {
+  d <- ggplot_build(lift_plot)$data[[1]]
+  max(d$y, na.rm = TRUE)
+}
+
+extract_pct_at_gain <- function(gain_plot, target_gain) {
+  d <- ggplot_build(gain_plot)$data[[1]]
+  d$x[which.min(abs(d$y - target_gain))]
+}
 ```
-
 ### 4.3. Класс G1 (хорошо представленный, 32% выборки)
-
 ```{r class-g1}
 curves_g1_NN <- plot_lift_gain(test_eval_NN, prob_G1, Type, "G1")
 profit_g1_NN <- plot_profit_curve(test_eval_NN, prob_G1, Type, "G1")
@@ -385,11 +380,28 @@ ggsave("output/lift_curve_g1.png", p_lift_g1, width = 9, height = 5, dpi = 150)
 ggsave("output/profit_curve_g1.png", p_profit_g1, width = 9, height = 5, dpi = 150)
 ```
 
-**Анализ для класса G1:**
-- **Gain:** RF находит 95% целевых объектов при 50% выборки (NN — только 87%)
-- **Lift:** RF на 10-15% эффективнее NN на участке 30-75% выборки
-- **Profit:** Максимальная прибыль RF (~130 у.е.) превышает NN (~115 у.е.) на 13%
-- **Рекомендация:** Random Forest с порогом, отбирающим 50-55% выборки
+```{r extract-metrics-g1, include=FALSE}
+# Извлекаем метрики для G1
+gain_at_50_rf_g1 <- extract_gain_at(curves_g1_RF$gain, 50)
+gain_at_50_nn_g1 <- extract_gain_at(curves_g1_NN$gain, 50)
+
+max_lift_rf_g1 <- extract_max_lift(curves_g1_RF$lift)
+max_lift_nn_g1 <- extract_max_lift(curves_g1_NN$lift)
+
+max_profit_rf_g1 <- max(profit_g1_RF$data$profit)
+max_profit_nn_g1 <- max(profit_g1_NN$data$profit)
+profit_adv_g1 <- round((max_profit_rf_g1 / max_profit_nn_g1 - 1) * 100)
+
+opt_pct_rf_g1 <- profit_g1_RF$data$percentile[which.max(profit_g1_RF$data$profit)]
+opt_range_rf_g1 <- sprintf("%.0f-%.0f%%", 
+                           max(0, opt_pct_rf_g1 - 5), 
+                           min(100, opt_pct_rf_g1 + 5))
+```
+Анализ для класса G1:
+- Gain: RF находит `r fmt_pct(gain_at_50_rf_g1)`% целевых объектов при 50% выборки (NN — только `r fmt_pct(gain_at_50_nn_g1)`%)
+- Lift: RF достигает `r fmt_lift(max_lift_rf_g1)` против `r fmt_lift(max_lift_nn_g1)` у NN
+- Profit: Максимальная прибыль RF (`r fmt_prof(max_profit_rf_g1)` у.е.) превышает NN (`r fmt_prof(max_profit_nn_g1)` у.е.) на `r profit_adv_g1`%
+- Рекомендация: Random Forest с порогом, отбирающим `r opt_range_rf_g1` выборки
 
 ### 4.4. Класс G3 (редкий класс, 8% выборки)
 
@@ -430,38 +442,59 @@ ggsave("output/lift_curve_g3.png", p_lift_g3, width = 9, height = 5, dpi = 150)
 ggsave("output/profit_curve_g3.png", p_profit_g3, width = 9, height = 5, dpi = 150)
 ```
 
-**Анализ для редкого класса G3:**
-- **Lift достигает 12.0** — в 12 раз эффективнее случайного выбора
-- RF находит 75% объектов при отборе лишь 10% выборки
-- **Рекомендация:** Random Forest с порогом 15-20% выборки
+```{r extract-metrics-g3, include=FALSE}
+# Извлекаем метрики для G3
+max_lift_rf_g3 <- extract_max_lift(curves_g3_RF$lift)
+max_lift_nn_g3 <- extract_max_lift(curves_g3_NN$lift)
+lift_adv_g3 <- round(max_lift_rf_g3 / max_lift_nn_g3, 1)
+
+pct_at_75_rf_g3 <- extract_pct_at_gain(curves_g3_RF$gain, 75)
+
+max_profit_rf_g3 <- max(profit_g3_RF$data$profit)
+opt_pct_rf_g3 <- profit_g3_RF$data$percentile[which.max(profit_g3_RF$data$profit)]
+opt_range_rf_g3 <- sprintf("%.0f-%.0f%%", 
+                           max(0, opt_pct_rf_g3 - 5), 
+                           min(100, opt_pct_rf_g3 + 5))
+```
+
+Анализ для редкого класса G3:
+- Lift достигает `r fmt_lift(max_lift_rf_g3)` — в `r fmt_lift(max_lift_rf_g3)` раз эффективнее случайного выбора
+- RF находит 75% объектов при отборе лишь `r fmt_pct(pct_at_75_rf_g3)`% выборки
+- Рекомендация: Random Forest с порогом `r opt_range_rf_g3` выборки
 
 ## 5. Итоговая таблица результатов
-
 ```{r summary-table}
+# Извлекаем метрики из CV и построенных кривых
 summary_tbl <- tibble(
   Model = c("Random Forest", "Neural Network", "SVM", "Decision Tree", "GLM"),
-  Accuracy = c("80.0%", "77.2%", "72.4%", "68.9%", "65.1%"),
-  Kappa = c("0.75", "0.71", "0.66", "0.62", "0.58"),
-  Best_Profit_G1 = c("~130", "~115", "~95", "~80", "~70"),
-  Max_Lift_G3 = c("12.0", "6.5", "—", "—", "—")
+  Accuracy = c(fmt_acc(acc_means["RF"]), fmt_acc(acc_means["NN"]),
+               fmt_acc(acc_means["SVM"]), fmt_acc(acc_means["RPART"]),
+               fmt_acc(acc_means["GLM"])),
+  Kappa = c(fmt_kap(kap_means["RF"]), fmt_kap(kap_means["NN"]),
+            fmt_kap(kap_means["SVM"]), fmt_kap(kap_means["RPART"]),
+            fmt_kap(kap_means["GLM"])),
+  Best_Profit_G1 = c(fmt_prof(max_profit_rf_g1), fmt_prof(max_profit_nn_g1),
+                     "—", "—", "—"),
+  Max_Lift_G3 = c(fmt_lift(max_lift_rf_g3), fmt_lift(max_lift_nn_g3),
+                  "—", "—", "—")
 )
 
 summary_tbl %>%
-  kable(caption = "Сводная таблица результатов", align = "lcccc") %>%
+  kable(caption = "Сводная таблица результатов (все метрики вычислены автоматически)",
+        align = "lcccc") %>%
   kable_styling(bootstrap_options = c("striped", "hover"))
 ```
 
 ## Выводы
-
-1. **Random Forest** стабильно превосходит все модели: Accuracy 80%, Kappa 0.75
-2. **Profit-анализ** показывает, что RF на 13% прибыльнее NN для частых классов
-3. Для **редких классов** (G3) RF достигает Lift = 12.0 — исключительная эффективность
+```{r final-conclusions, include=FALSE}
+best_model <- names(which.max(acc_means))
+best_acc <- fmt_acc(acc_means[best_model])
+best_kap <- fmt_kap(kap_means[best_model])
+```
+1. `r best_model` стабильно превосходит все модели: Accuracy `r best_acc`, Kappa `r best_kap`
+2. Profit-анализ показывает, что RF на `r profit_adv_g1`% прибыльнее NN для частых классов
+3. Для редких классов (G3) RF достигает Lift = `r fmt_lift(max_lift_rf_g3)` — исключительная эффективность
 4. Ансамблевые методы устойчивы к шуму в измерениях и лучше справляются с нелинейными зависимостями
 5. Рекомендации для production: Random Forest с адаптивным порогом классификации
-
 ---
-
-**Технологии:** R, caret, tidyverse, ggplot2, randomForest, e1071, nnet, kernlab, patchwork
-```
-
----
+Технологии: R, caret, tidyverse, ggplot2, randomForest, e1071, nnet, kernlab, patchwork
