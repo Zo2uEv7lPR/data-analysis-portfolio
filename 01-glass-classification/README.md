@@ -88,6 +88,9 @@ R, caret, tidyverse, ggplot2, randomForest, e1071, nnet, kernlab, patchwork
 
 Если проверить только **10% образцов** с наивысшей вероятностью по мнению Random Forest, вы найдёте 75% всех редких стёкол G3! При случайном выборе вы бы нашли только 10%. Это экономит **90% ресурсов** на проверку.
 
+**Ссылка на отчёт**
+https://htmlpreview.github.io/?https://github.com/Zo2uEv7lPR/data-analysis-portfolio/blob/main/01-glass-classification/analysis.html
+
 ## Автор
 
 **[Вячеслав AKA Zo2uEv7lPR]**
