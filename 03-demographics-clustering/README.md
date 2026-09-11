@@ -8,10 +8,6 @@
 ├── README.md
 ├── analysis.Rmd
 ├── analysis.html
-├── data/
-│ ├── country_population.csv
-│ ├── fertility_rate.csv
-│ └── life_expectancy.csv
 └── output/
   ├── cluster_plot.png
   ├── cluster_profiles.png
