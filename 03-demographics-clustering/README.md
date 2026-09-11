@@ -13,11 +13,11 @@
 │ ├── fertility_rate.csv
 │ └── life_expectancy.csv
 └── output/
-├── cluster_plot.png
-├── cluster_profiles.png
-├── speed_distribution.png
-├── forecast.png
-└── cluster_transitions.gif
+│ ├── cluster_plot.png
+│ ├── cluster_profiles.png
+│ ├── speed_distribution.png
+│ ├── forecast.png
+│ └── cluster_transitions.gif
 ```
 ## Библиотеки 
 
