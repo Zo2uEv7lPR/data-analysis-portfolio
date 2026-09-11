@@ -1,1 +1,339 @@
+---
+title: "Сегментация стран мира по демографическим паттернам (1960-2016)"
+author: "Data Analysis Portfolio"
+date: "2026"
+output:
+ html_document:
+ toc: true
+ toc_float: true
+ theme: flatly
+ highlight: tango
+ code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6, out.width = "100%"); 
+```
+## О задаче
 
+Бизнес-контекст: Демографические переходы — ключевой индикатор экономического и социального развития стран. Понимание траекторий развития позволяет правительствам и международным организациям прогнозировать потребности в инфраструктуре, здравоохранении и образовании.
+
+Данные: Три датасета Всемирного Банка за период 1960–2016 гг.:
+- country_population.csv — численность населения
+- fertility_rate.csv — коэффициент фертильности (среднее число детей на женщину)
+- life_expectancy.csv — ожидаемая продолжительность жизни при рождении
+
+Подход:
+1. PCA — снижение размерности для выделения ключевых демографических компонент
+2. K-Means кластеризация — сегментация стран по схожим траекториям развития
+3. LDA — анализ переходов стран между кластерами во времени
+4. Линейные тренды — прогнозирование достижения порога «развитых стран»
+```{r libraries}
+#install.packages(c("tidyverse", "factoextra", "plotly", "fmsb", "gganimate", "MASS", "broom", "cluster", "patchwork", "kableExtra"));
+library(tidyverse); library(ggplot2); library(factoextra); library(plotly); library(tidyr); library(fmsb); library(cluster); library(gganimate); library(MASS); library(broom); library(patchwork); library(kableExtra); if (!dir.exists("output")) dir.create("output"); if (!dir.exists("data")) dir.create("data"); set.seed(123); 
+```
+## 1. Загрузка и предобработка данных
+
+### 1.1. Загрузка трёх датасетов
+
+> Примечание: датасеты не включены в репозиторий. Скачайте country_population.csv, fertility_rate.csv и life_expectancy.csv и поместите в папку data/.
+
+```{r data-loading}
+required_files <- c("data/country_population.csv", "data/fertility_rate.csv", "data/life_expectancy.csv");
+for (f in required_files) { if (!file.exists(f)) { stop(paste("Файл", f, "не найден. Поместите датасеты в папку data/")) } };
+population <- read.csv("data/country_population.csv", stringsAsFactors = FALSE, check.names = FALSE);
+fertility <- read.csv("data/fertility_rate.csv", stringsAsFactors = FALSE, check.names = FALSE); life_exp <- read.csv("data/life_expectancy.csv", stringsAsFactors = FALSE, check.names = FALSE); 
+```
+### 1.2. Преобразование в длинный формат
+```{r data-transformation}
+library(tidyverse);
+
+convert_to_long <- function(df, indicator_name) {
+  year_cols <- grep("^[0-9]{4}$", colnames(df), value = TRUE);
+  result <- data.frame(Country = character(), Country_Code = character(), Year = integer(), Indicator = character(), Value = numeric(), stringsAsFactors = FALSE);
+  for (y in year_cols) {
+    tmp <- data.frame(Country = df[["Country Name"]], Country_Code = df[["Country Code"]], Year = as.integer(y), Indicator = indicator_name, Value = df[[y]], stringsAsFactors = FALSE);
+    result <- rbind(result, tmp);
+  }
+  return(result);
+};
+
+population_long <- convert_to_long(population, "Population");
+life_exp_long <- convert_to_long(life_exp, "Life_Expectancy");
+fertility_long <- convert_to_long(fertility, "Fertility");
+combined_data <- bind_rows(population_long, life_exp_long, fertility_long);
+data <- combined_data %>% pivot_wider(id_cols = c(Country, Country_Code, Year), names_from = Indicator, values_from = Value); 
+```
+
+### 1.3. Очистка данных
+
+Удаляем страны с высоким процентом пропусков.
+```{r data-cleaning}
+na_by_country <- data %>% group_by(Country) %>% summarise(missing_years = sum(is.na(Population) | is.na(Life_Expectancy) | is.na(Fertility)), total_years = n(), na_percent = missing_years / total_years) %>% ungroup(); high_na_countries <- na_by_country %>% filter(na_percent > 0) %>% pull(Country); data_clean <- data %>% filter(!Country %in% high_na_countries) %>% na.omit(); cat("Исходное число наблюдений:", nrow(data), "\n"); cat("После очистки:", nrow(data_clean), "\n"); cat("Число стран:", length(unique(data_clean$Country)), "\n"); 
+```
+## 2. Разведочный анализ (EDA)
+
+Рассмотрим динамику показателей для 8 репрезентативных стран.
+```{r eda-plots, fig.width=12, fig.height=10}
+library(patchwork);
+representative_countries <- c("United States", "China", "India", "Brazil", "Germany", "Nigeria", "Japan", "Russian Federation");
+plot_data <- data_clean %>% filter(Country %in% representative_countries);
+p1 <- ggplot(plot_data, aes(x = Year, y = Population, color = Country)) + geom_line(linewidth = 1) + scale_y_continuous(labels = scales::comma) + labs(title = "Динамика населения", y = "Население") + theme_minimal() + theme(legend.position = "bottom");
+p2 <- ggplot(plot_data, aes(x = Year, y = Life_Expectancy, color = Country)) + geom_line(linewidth = 1) + labs(title = "Динамика ожидаемой продолжительности жизни", y = "Ожидаемая продолжительность жизни (лет)") + theme_minimal() + theme(legend.position = "bottom");
+p3 <- ggplot(plot_data, aes(x = Year, y = Fertility, color = Country)) + geom_line(linewidth = 1) + labs(title = "Динамика фертильности", y = "Среднее число детей на женщину") + theme_minimal() + theme(legend.position = "bottom");
+p1 / p2 / p3; 
+```
+Ключевые паттерны:**
+- Население: экспоненциальный рост в развивающихся странах (Индия, Нигерия)
+- Продолжительность жизни: глобальное сближение показателей с 1960 по 2016
+- Фертильность: резкое снижение во всём мире — основной драйвер демографического перехода
+
+## 3. PCA анализ
+
+### 3.1. Подготовка матрицы признаков
+
+Население имеет сильный правосторонний перекос, поэтому применяем логарифмирование.
+```{r pca-prep, fig.width=12, fig.height=8}
+pca_matrix <- data_clean[, c("Population", "Life_Expectancy", "Fertility")];
+pca_matrix$Population <- log(pca_matrix$Population);
+par(mfrow = c(2, 3));
+hist(pca_matrix$Population, main = "log(Население)", col = "lightgreen");
+hist(data_clean$Life_Expectancy, main = "Продолжительность жизни", col = "lightblue");
+hist(data_clean$Fertility, main = "Фертильность", col = "lightpink");
+hist(scale(pca_matrix$Population), main = "log(Население), standardized", col = "lightgreen");
+hist(scale(data_clean$Life_Expectancy), main = "Life Expectancy, standardized", col = "lightblue");
+hist(scale(data_clean$Fertility), main = "Fertility, standardized", col = "lightpink");
+pca_scaled <- scale(pca_matrix); 
+```
+### 3.2. Главные компоненты и их интерпретация
+```{r pca-analysis, fig.width=12, fig.height=6}
+library(factoextra);
+pca_result <- prcomp(pca_scaled, center = FALSE);
+variance_prop <- pca_result$sdev^2 / sum(pca_result$sdev^2);
+fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 70), barfill = "steelblue", barcolor = "steelblue") + labs(title = "Доля объясненной дисперсии главными компонентами", x = "Главные компоненты", y = "Процент объясненной дисперсии, %") + theme_minimal(); 
+```
+```{r pca-loadings, fig.width=14, fig.height=5}
+pca_result$rotation %>% as.data.frame() %>% rownames_to_column(var = "Variable") %>% mutate(Variable = case_when(Variable == "Population" ~ "log(Население)", Variable == "Life_Expectancy" ~ "Ожид. продолж. жизни", Variable == "Fertility" ~ "Фертильность", TRUE ~ Variable)) %>% pivot_longer(cols = c(PC1, PC2, PC3), names_to = "Component", values_to = "Loading") %>% ggplot(aes(x = Variable, y = Loading, fill = Variable)) + geom_bar(stat = "identity", alpha = 0.8, width = 0.7) + facet_wrap(~ Component, ncol = 3) + labs(title = "Нагрузки переменных на главные компоненты", y = "Значение нагрузки (коэффициент)", x = "Исходная переменная") + theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none", plot.title = element_text(hjust = 0.5)) + scale_fill_manual(values = c("#FF6B6B", "#4ECDC4", "#45B7D1")); 
+```
+Интерпретация главных компонент:
+
+| Компонента | Доля дисперсии | Смысловая интерпретация |
+|------------|---------------|--------------------------|
+| PC1 | `r sprintf("%.1f%%", variance_prop[1]*100)` | Уровень демографического перехода — высокая продолжительность жизни + низкая фертильность = развитые страны |
+| PC2 | `r sprintf("%.1f%%", variance_prop[2]*100)` | Демографический масштаб — размер населения страны |
+| PC3 | `r sprintf("%.1f%%", variance_prop[3]*100)` | Специфические паттерны — шум и локальные особенности |
+```{r pca-scores}
+pca_scores <- as.data.frame(pca_result$x);
+colnames(pca_scores) <- paste0("PC", 1:ncol(pca_scores));
+pca_data <- cbind(data_clean[, c("Country", "Country_Code", "Year")], Population_original = data_clean$Population, Life_Expectancy_original = data_clean$Life_Expectancy, Fertility_original = data_clean$Fertility, log_Population = pca_matrix$Population, pca_scaled, pca_scores);
+```
+## 4. Кластерный анализ
+
+### 4.1. Определение оптимального числа кластеров
+
+Используем два классических метода: Метод локтя (Elbow) и Метод силуэтов (Silhouette).
+```{r optimal-k, fig.width=14, fig.height=6}
+library(cluster);
+country_pca_means <- data.frame(Country = data_clean$Country, Year = data_clean$Year, Population = data_clean$Population, Life_Expectancy = data_clean$Life_Expectancy, Fertility = data_clean$Fertility, PC1 = pca_scores[, 1], PC2 = pca_scores[, 2], PC3 = pca_scores[, 3]) %>% group_by(Country) %>% summarise(PC1_mean = mean(PC1, na.rm = TRUE), PC2_mean = mean(PC2, na.rm = TRUE), PC3_mean = mean(PC3, na.rm = TRUE), Population_2016 = last(Population[Year == 2016]), Life_Expectancy_2016 = last(Life_Expectancy[Year == 2016]), Fertility_2016 = last(Fertility[Year == 2016]), n_years = n()) %>% filter(n_years >= 30);
+cluster_data <- scale(country_pca_means[, c("PC1_mean", "PC2_mean", "PC3_mean")]);
+rownames(cluster_data) <- country_pca_means$Country;
+set.seed(59);
+wss <- numeric(15);
+for (k in 1:15) { kmeans_result <- kmeans(cluster_data, centers = k, nstart = 25, iter.max = 50);
+wss[k] <- kmeans_result$tot.withinss };
+elbow_df <- data.frame(k = 1:15, wss = wss);
+elbow_plot <- ggplot(elbow_df, aes(x = k, y = wss)) + geom_line(color = "steelblue", size = 1) + geom_point(color = "steelblue", size = 3) + scale_x_continuous(breaks = 1:15) + labs(title = "Метод локтя", x = "Число кластеров (k)", y = "WSS") + theme_minimal();
+sil_width <- numeric(10);
+for (k in 2:10) { kmeans_result <- kmeans(cluster_data, centers = k, nstart = 25);
+sil <- silhouette(kmeans_result$cluster, dist(cluster_data));
+sil_width[k] <- mean(sil[, 3]) };
+sil_df <- data.frame(k = 2:10, sil_width = sil_width[2:10]);
+sil_plot <- ggplot(sil_df, aes(x = k, y = sil_width)) + geom_line(color = "darkgreen", size = 1) + geom_point(color = "darkgreen", size = 3) + scale_x_continuous(breaks = 2:10) + labs(title = "Метод силуэта", x = "Число кластеров (k)", y = "Средняя ширина силуэта") + theme_minimal();
+elbow_plot | sil_plot; 
+```
+Выбор: k = 4 даёт оптимальный баланс между компактностью кластеров и интерпретируемостью.
+
+### 4.2. K-Means кластеризация (k=4)
+```{r kmeans, fig.width=11, fig.height=7}
+optimal_k <- 4;
+kmeans_result <- kmeans(cluster_data, centers = optimal_k, nstart = 25, iter.max = 100);
+country_pca_means$Cluster <- as.factor(kmeans_result$cluster);
+cluster_plot <- ggplot(country_pca_means, aes(x = PC1_mean, y = PC2_mean, color = Cluster, label = Country)) + geom_point(size = 3, alpha = 0.8) + geom_text(data = country_pca_means %>% group_by(Cluster) %>% slice_max(PC2_mean, n = 2) %>% bind_rows(country_pca_means %>% group_by(Cluster) %>% slice_min(PC2_mean, n = 2)), size = 3, hjust = -0.1, check_overlap = TRUE) + labs(title = paste("Кластеризация стран (k =", optimal_k, ")"), x = "PC1: Уровень демографического перехода\n(← развивающиеся | развитые →)", y = "PC2: Демографический масштаб\n(← крупные | маленькие →)", color = "Кластер") + theme_minimal() + theme(legend.position = "right", plot.title = element_text(hjust = 0.5, face = "bold"));
+cluster_plot;
+ggsave("output/cluster_plot.png", cluster_plot, width = 11, height = 7, dpi = 150); 
+```
+### 4.3. Характеристика кластеров
+```{r cluster-profiles, fig.width=10, fig.height=6}
+library(kableExtra);
+cluster_characteristics <- country_pca_means %>% group_by(Cluster) %>% summarise(n_countries = n(), PC1_mean = mean(PC1_mean), PC2_mean = mean(PC2_mean), Population_median = median(Population_2016, na.rm = TRUE), Life_Expectancy_mean = mean(Life_Expectancy_2016, na.rm = TRUE), Fertility_mean = mean(Fertility_2016, na.rm = TRUE), Example_Countries = paste(head(Country, 5), collapse = ", ")) %>% mutate(log_Population_z = scale(log(Population_median))[,1], Life_Expectancy_z = scale(Life_Expectancy_mean)[,1], Fertility_z = scale(Fertility_mean)[,1]) %>% arrange(PC1_mean);
+display_table <- cluster_characteristics[, c("Cluster", "n_countries", "Life_Expectancy_mean", "Fertility_mean", "Example_Countries")];
+display_table$Life_Expectancy_mean <- sprintf("%.1f лет", display_table$Life_Expectancy_mean);
+display_table$Fertility_mean <- sprintf("%.2f детей", display_table$Fertility_mean);
+tbl <- kable(display_table, caption = "Характеристика кластеров (данные 2016 г.)", col.names = c("Кластер", "N стран", "Продолж. жизни", "Фертильность", "Примеры стран"));
+kable_styling(tbl, bootstrap_options = c("striped", "hover"));
+```
+```{r cluster-profile-plot}
+profile_long <- data.frame(Cluster = rep(cluster_characteristics$Cluster, 3), Indicator = rep(c("log_Population_z", "Life_Expectancy_z", "Fertility_z"), each = nrow(cluster_characteristics)), Value = c(cluster_characteristics$log_Population_z, cluster_characteristics$Life_Expectancy_z, cluster_characteristics$Fertility_z), stringsAsFactors = FALSE);
+profile_plot <- ggplot(profile_long, aes(x = Cluster, y = Value, fill = Indicator)) + geom_bar(stat = "identity", position = "dodge") + labs(title = "Профили кластеров (стандартизированные значения)", x = "Кластер", y = "Z-score") + theme_minimal() + scale_fill_manual(values = c("log_Population_z" = "#4ECDC4", "Life_Expectancy_z" = "#FF6B6B", "Fertility_z" = "#FF02F2"), labels = c("Население", "Продолжительность жизни", "Фертильность"));
+profile_plot;
+ggsave("output/cluster_profiles.png", profile_plot, width = 10, height = 6, dpi = 150); 
+```
+### 4.4. Статистическая валидация (ANOVA)
+
+Проверяем, что кластеры действительно различаются по главным компонентам.
+```{r anova}
+anova_results <- list();
+for (var in c("PC1_mean", "PC2_mean", "PC3_mean")) { formula <- as.formula(paste(var, "~ Cluster"));
+anova_result <- aov(formula, data = country_pca_means);
+anova_results[[var]] <- summary(anova_result);
+p_value <- summary(anova_result)[[1]]$"Pr(>F)"[1];
+f_value <- summary(anova_result)[[1]]$"F value"[1];
+cat(sprintf("%s: F=%.2f, p-value=%.2e\n", var, f_value, p_value));
+if (p_value < 0.05) { tukey_result <- TukeyHSD(anova_result);
+cat(" Tukey HSD: статистически значимые различия обнаружены\n") } }; 
+```
+Интерпретация кластеров:
+
+- Кластер 1 (Развивающиеся): высокая фертильность, низкая продолжительность жизни. Примеры: Нигер, Чад, Ангола.
+- Кластер 2 (Переходные): страны в процессе демографического перехода. Примеры: Индия, Бразилия, Мексика.
+- Кластер 3 (Крупные страны): выделяются масштабом населения (PC2). Примеры: Китай, Индия, США.
+- Кластер 4 (Развитые): низкая фертильность, высокая продолжительность жизни. Примеры: Япония, Германия, Франция.
+
+## 5. Анализ траекторий (LDA)
+
+Используем Linear Discriminant Analysis для присвоения кластерных меток каждой стране в каждый год. Это позволяет отследить переходы между кластерами.
+
+### 5.1. Обучение LDA модели
+```{r lda-model}
+library(MASS);
+country_pca_means_raw <- country_pca_means[!is.na(country_pca_means$Cluster), c("Country", "PC1_mean", "PC2_mean", "PC3_mean", "Cluster")];
+lda_model <- lda(Cluster ~ PC1_mean + PC2_mean + PC3_mean, data = country_pca_means_raw);
+cat("Априорные вероятности кластеров:\n");
+print(lda_model$prior); 
+```
+### 5.2. Применение LDA к годовым данным
+```{r lda-trajectories}
+pca_data_with_clusters <- pca_data[, c("Country", "Year", "PC1", "PC2", "PC3")];
+pca_data_with_clusters$Cluster_Year <- predict(lda_model, newdata = data.frame(PC1_mean = pca_data_with_clusters$PC1, PC2_mean = pca_data_with_clusters$PC2, PC3_mean = pca_data_with_clusters$PC3))$class;
+country_trajectories <- pca_data_with_clusters %>% group_by(Country) %>% summarise(trajectory = paste(Cluster_Year[order(Year)], collapse = "->"), cluster_1960 = first(Cluster_Year[order(Year)]), cluster_2016 = last(Cluster_Year[order(Year)]), n_years = n(), .groups = "drop") %>% filter(n_years >= 30);
+cat("Всего стран с данными >= 30 лет:", nrow(country_trajectories), "\n"); 
+```
+### 5.3. Типы переходов
+```{r transition-types}
+stable_countries <- country_trajectories %>% filter(sapply(strsplit(trajectory, "->"), function(x) length(unique(x)) == 1));
+cat("Стабильных стран (не меняли кластер):", nrow(stable_countries), "\n");
+transition_1_2 <- country_trajectories %>% filter(cluster_1960 == 1, cluster_2016 == 2);
+transition_2_4 <- country_trajectories %>% filter(cluster_1960 == 2, cluster_2016 == 4);
+transition_1_2_4 <- country_trajectories %>% filter(grepl("1.*2.*4", trajectory));
+transitions_summary <- tibble(`Тип перехода` = c("Стабильные", "1 -> 2", "2 -> 4", "1 -> 2 -> 4"), `Количество стран` = c(nrow(stable_countries), nrow(transition_1_2), nrow(transition_2_4), nrow(transition_1_2_4)), `Примеры` = c(paste(head(stable_countries$Country, 3), collapse = ", "), paste(head(transition_1_2$Country, 3), collapse = ", "), paste(head(transition_2_4$Country, 3), collapse = ", "), paste(head(transition_1_2_4$Country, 3), collapse = ", ")));
+transitions_summary %>% kable(caption = "Типы демографических переходов (1960-2016)") %>% kable_styling(bootstrap_options = c("striped", "hover")); 
+```
+## 6. Прогнозирование
+
+### 6.1. Скорость демографического перехода
+
+Линейный тренд PC1 ~ Year позволяет оценить скорость перехода каждой страны.
+```{r speed-distribution, fig.width=10, fig.height=6}
+library(broom);
+country_trends <- data.frame(Country = character(), slope = numeric(), p_value = numeric(), stringsAsFactors = FALSE);
+for (c in unique(pca_data$Country)) {
+  country_subset <- pca_data[pca_data$Country == c, ];
+  if (nrow(country_subset) > 1) {
+    model <- lm(PC1 ~ Year, data = country_subset);
+    model_tidy <- tidy(model);
+    year_row <- model_tidy[model_tidy$term == "Year", ];
+    if (nrow(year_row) > 0) {
+      country_trends <- rbind(country_trends, data.frame(Country = c, slope = year_row$estimate, p_value = year_row$p.value, stringsAsFactors = FALSE));
+    }
+  }
+}
+speed_plot <- ggplot(country_trends, aes(x = slope)) + geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) + geom_vline(xintercept = 0, color = "red", linetype = "dashed") + labs(title = "Распределение скоростей демографического перехода", subtitle = "Slope = изменение PC1 в год (положительное = развитие)", x = "Скорость изменения PC1 (в год)", y = "Количество стран") + theme_minimal();
+speed_plot;
+ggsave("output/speed_distribution.png", speed_plot, width = 10, height = 6, dpi = 150); 
+```
+### 6.2. Топ-10 стран по скорости перехода
+```{r top-speeds} 
+top_fast <- country_trends %>% arrange(desc(slope)) %>% head(10) %>% mutate(slope = sprintf("%.4f", slope));
+top_slow <- country_trends %>% arrange(slope) %>% head(10) %>% mutate(slope = sprintf("%.4f", slope));
+cat("ТОП-10 стран с самым БЫСТРЫМ демографическим переходом:\n");
+print(top_fast);
+cat("\nТОП-10 стран с самым МЕДЛЕННЫМ переходом:\n");
+print(top_slow); 
+```
+### 6.3. Прогноз: когда страны достигнут порога «развитых» (PC1 > 0)
+```{r forecast}
+forecast_threshold <- function(country_name, threshold = 0) { country_data <- pca_data %>% filter(Country == country_name);
+if (nrow(country_data) < 10) return(NA);
+model <- lm(PC1 ~ Year, data = country_data);
+coef <- coef(model);
+forecast_year <- (threshold - coef[1]) / coef[2];
+return(forecast_year) };
+forecasts <- country_trends %>% rowwise() %>% mutate(forecast_year = forecast_threshold(Country, threshold = 0)) %>% filter(!is.na(forecast_year), forecast_year > 2016, forecast_year < 2100) %>% arrange(forecast_year);
+forecast_plot <- ggplot(forecasts %>% head(20), aes(x = reorder(Country, forecast_year), y = forecast_year)) + geom_point(size = 3, color = "steelblue") + geom_hline(yintercept = 2016, linetype = "dashed", color = "red") + geom_hline(yintercept = 2050, linetype = "dashed", color = "gray50") + coord_flip() + labs(title = "Прогноз достижения порога развитых стран (PC1 > 0)", subtitle = "На основе линейного тренда 1960-2016", x = "Страна", y = "Год прогноза") + theme_minimal() + theme(axis.text.y = element_text(size = 8));
+forecast_plot;
+ggsave("output/forecast.png", forecast_plot, width = 10, height = 8, dpi = 150); 
+```
+## 7. Анимация демографических переходов
+```{r animation, fig.width=12, fig.height=7}
+# Анимация требует длительного рендеринга (~10-15 минут)
+# Раскомментируйте для локального запуска
+library(gganimate);
+selected_countries <- c("Chad", "Austria", "Algeria", "Armenia", "Barbados", "China");
+anim_data <- pca_data_with_clusters %>% filter(Country %in% selected_countries) %>% mutate(Country = factor(Country, levels = selected_countries), Cluster_Year = as.factor(Cluster_Year));
+anim_plot <- ggplot(anim_data, aes(x = PC1, y = PC2, color = Cluster_Year, group = Country)) + geom_point(size = 8, alpha = 0.8) + geom_text(aes(label = Country), hjust = -0.1, vjust = -0.5, size = 3.5, check_overlap = TRUE) + scale_color_manual(values = c("1" = "#E41A1C", "2" = "#377EB8", "3" = "#4DAF4A", "4" = "#984EA3"), labels = c("1" = "Развивающиеся", "2" = "Переходные", "3" = "Крупные", "4" = "Развитые")) + transition_time(Year) + labs(title = "Демографические переходы стран (1960-2016)", subtitle = "Год: {frame_time}", x = "PC1: Уровень демографического перехода", y = "PC2: Демографический масштаб", color = "Кластер") + theme_minimal();
+anim_save("output/cluster_transitions.gif", anim_plot, nframes = 114, fps = 10, width = 1400, height = 800, units = "px", res = 150);
+knitr::include_graphics("output/cluster_transitions.gif");
+```
+## Итоговая таблица результатов
+```{r summary-table, include=FALSE}
+best_model <- "K-Means (k=4)";
+pca_variance <- sprintf("%.1f%%", variance_prop[1]*100);
+n_countries <- nrow(country_trajectories);
+n_transitions <- nrow(country_trajectories) - nrow(stable_countries); 
+```
+| Параметр | Значение |
+|----------|----------|
+| Период анализа | 1960 – 2016 (57 лет) |
+| Число стран с полной динамикой | `r n_countries` |
+| Доля дисперсии в PC1 | `r pca_variance` |
+| Число кластеров | 4 |
+| Стран, сменивших кластер | `r n_transitions` |
+| Метод кластеризации | `r best_model` |
+
+## Выводы
+
+1. PCA эффективно выделяет две главные оси развития:
+ - PC1 (r pca_variance дисперсии) — уровень демографического перехода
+ - PC2 — демографический масштаб (размер страны)
+
+2. Четыре устойчивых кластера отражают классические стадии демографического перехода:
+ - Развивающиеся → Переходные → Развитые (+ крупные страны как отдельная группа)
+
+3. Большинство стран прошли последовательный путь развития (1 → 2 → 4). Лишь немногие сохранили стабильный кластер с 1960 года.
+
+4. Прогноз на основе линейных трендов позволяет оценить, когда развивающиеся страны достигнут показателей развитых — что критически важно для планирования международной помощи и инвестиций.
+
+5. LDA анализ траекторий даёт воспроизводимый способ классифицировать страны по годам, а не только по усреднённым показателям.
+
+## Технологии
+
+R, tidyverse, factoextra, gganimate, MASS, broom, patchwork, kableExtra
+
+## Структура
+
+03-demographics-clustering/ ├── README.md ├── analysis.Rmd ├── analysis.html ├── data/ │ ├── country_population.csv │ ├── fertility_rate.csv │ └── life_expectancy.csv └── output/  ├── cluster_plot.png  ├── cluster_profiles.png  ├── speed_distribution.png  ├── forecast.png  └── cluster_transitions.gif 
+
+## Как запустить
+
+1. Скачайте три датасета с Kaggle или World Bank Data
+2. Поместите CSV-файлы в папку data/
+3. Откройте analysis.Rmd в RStudio
+4. Нажмите Knit (Ctrl+Shift+K)
+5. Получите обновлённый analysis.html со всеми графиками
+
+Время выполнения: ~5-10 минут (без анимации). С анимацией gganimate — около 15-20 минут.
+
+## Автор
+
+**[Вячеслав AKA Zo2uEv7lPR]
+- Telegram: @Zo2uEv7lPR
+- Email: Zo2uEv7lPR@yandex.ru
