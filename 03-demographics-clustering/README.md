@@ -50,6 +50,9 @@
 
 Страны сгруппированы в кластеры со схожими демографическими профилями. Для каждого кластера получены описательные таблицы и визуализации, все файлы сохранены в папку output/. 
 
+**Ссылка на отчёт**
+https://htmlpreview.github.io/?https://github.com/Zo2uEv7lPR/data-analysis-portfolio/blob/main/03-demographics-clustering/analysis.html
+
 ## Автор 
 
 Вячеслав AKA Zo2uEv7lPR 
