@@ -41,7 +41,8 @@ library(tidyverse); library(ggplot2); library(factoextra); library(plotly); libr
 required_files <- c("data/country_population.csv", "data/fertility_rate.csv", "data/life_expectancy.csv");
 for (f in required_files) { if (!file.exists(f)) { stop(paste("Файл", f, "не найден. Поместите датасеты в папку data/")) } };
 population <- read.csv("data/country_population.csv", stringsAsFactors = FALSE, check.names = FALSE);
-fertility <- read.csv("data/fertility_rate.csv", stringsAsFactors = FALSE, check.names = FALSE); life_exp <- read.csv("data/life_expectancy.csv", stringsAsFactors = FALSE, check.names = FALSE); 
+fertility <- read.csv("data/fertility_rate.csv", stringsAsFactors = FALSE, check.names = FALSE);
+life_exp <- read.csv("data/life_expectancy.csv", stringsAsFactors = FALSE, check.names = FALSE); 
 ```
 ### 1.2. Преобразование в длинный формат
 ```{r data-transformation}
@@ -73,7 +74,7 @@ na_by_country <- data %>% group_by(Country) %>% summarise(missing_years = sum(is
 ## 2. Разведочный анализ (EDA)
 
 Рассмотрим динамику показателей для 8 репрезентативных стран.
-```{r eda-plots, fig.width=12, fig.height=10}
+```{r eda-plots, fig.width=12, fig.height=18}
 library(patchwork);
 representative_countries <- c("United States", "China", "India", "Brazil", "Germany", "Nigeria", "Japan", "Russian Federation");
 plot_data <- data_clean %>% filter(Country %in% representative_countries);
@@ -82,8 +83,8 @@ p2 <- ggplot(plot_data, aes(x = Year, y = Life_Expectancy, color = Country)) + g
 p3 <- ggplot(plot_data, aes(x = Year, y = Fertility, color = Country)) + geom_line(linewidth = 1) + labs(title = "Динамика фертильности", y = "Среднее число детей на женщину") + theme_minimal() + theme(legend.position = "bottom");
 p1 / p2 / p3; 
 ```
-Ключевые паттерны:**
-- Население: экспоненциальный рост в развивающихся странах (Индия, Нигерия)
+**Ключевые паттерны:**
+- Население: Очень быстрый рост в развивающихся странах (Китай, Индия, Нигерия)
 - Продолжительность жизни: глобальное сближение показателей с 1960 по 2016
 - Фертильность: резкое снижение во всём мире — основной драйвер демографического перехода
 
@@ -157,7 +158,7 @@ elbow_plot | sil_plot;
 optimal_k <- 4;
 kmeans_result <- kmeans(cluster_data, centers = optimal_k, nstart = 25, iter.max = 100);
 country_pca_means$Cluster <- as.factor(kmeans_result$cluster);
-cluster_plot <- ggplot(country_pca_means, aes(x = PC1_mean, y = PC2_mean, color = Cluster, label = Country)) + geom_point(size = 3, alpha = 0.8) + geom_text(data = country_pca_means %>% group_by(Cluster) %>% slice_max(PC2_mean, n = 2) %>% bind_rows(country_pca_means %>% group_by(Cluster) %>% slice_min(PC2_mean, n = 2)), size = 3, hjust = -0.1, check_overlap = TRUE) + labs(title = paste("Кластеризация стран (k =", optimal_k, ")"), x = "PC1: Уровень демографического перехода\n(← развивающиеся | развитые →)", y = "PC2: Демографический масштаб\n(← крупные | маленькие →)", color = "Кластер") + theme_minimal() + theme(legend.position = "right", plot.title = element_text(hjust = 0.5, face = "bold"));
+cluster_plot <- ggplot(country_pca_means, aes(x = PC1_mean, y = PC2_mean, color = Cluster, label = Country)) + geom_point(size = 3, alpha = 0.8) + geom_text(data = country_pca_means %>% group_by(Cluster) %>% slice_max(PC2_mean, n = 2) %>% bind_rows(country_pca_means %>% group_by(Cluster) %>% slice_min(PC2_mean, n = 2)), size = 3, hjust = -0.1, check_overlap = TRUE) + labs(title = paste("Кластеризация стран (k =", optimal_k, ")"), x = "PC1: Уровень демографического перехода\n(← развитые | развивающиеся →)", y = "PC2: Демографический масштаб\n(← крупные | маленькие →)", color = "Кластер") + theme_minimal() + theme(legend.position = "right", plot.title = element_text(hjust = 0.5, face = "bold"));
 cluster_plot;
 ggsave("output/cluster_plot.png", cluster_plot, width = 11, height = 7, dpi = 150); 
 ```
@@ -194,8 +195,8 @@ cat(" Tukey HSD: статистически значимые различия о
 Интерпретация кластеров:
 
 - Кластер 1 (Развивающиеся): высокая фертильность, низкая продолжительность жизни. Примеры: Нигер, Чад, Ангола.
-- Кластер 2 (Переходные): страны в процессе демографического перехода. Примеры: Индия, Бразилия, Мексика.
-- Кластер 3 (Крупные страны): выделяются масштабом населения (PC2). Примеры: Китай, Индия, США.
+- Кластер 2 (Крупные страны или регионы): выделяются масштабом населения (PC2). Примеры: Китай, Индия, США.
+- Кластер 3 (Переходные): страны в процессе демографического перехода. Примеры: Индия, Бразилия, Мексика.
 - Кластер 4 (Развитые): низкая фертильность, высокая продолжительность жизни. Примеры: Япония, Германия, Франция.
 
 ## 5. Анализ траекторий (LDA)
@@ -246,29 +247,36 @@ for (c in unique(pca_data$Country)) {
     }
   }
 }
-speed_plot <- ggplot(country_trends, aes(x = slope)) + geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) + geom_vline(xintercept = 0, color = "red", linetype = "dashed") + labs(title = "Распределение скоростей демографического перехода", subtitle = "Slope = изменение PC1 в год (положительное = развитие)", x = "Скорость изменения PC1 (в год)", y = "Количество стран") + theme_minimal();
+speed_plot <- ggplot(country_trends, aes(x = slope)) + geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) + geom_vline(xintercept = 0, color = "red", linetype = "dashed") + labs(title = "Распределение скоростей демографического перехода", subtitle = "Slope = изменение PC1 в год (отрицательное = развитие)", x = "Скорость изменения PC1 (в год)", y = "Количество стран") + theme_minimal();
 speed_plot;
 ggsave("output/speed_distribution.png", speed_plot, width = 10, height = 6, dpi = 150); 
 ```
 ### 6.2. Топ-10 стран по скорости перехода
 ```{r top-speeds} 
-top_fast <- country_trends %>% arrange(desc(slope)) %>% head(10) %>% mutate(slope = sprintf("%.4f", slope));
-top_slow <- country_trends %>% arrange(slope) %>% head(10) %>% mutate(slope = sprintf("%.4f", slope));
+top_slow <- country_trends %>% arrange(desc(slope)) %>% head(10) %>% mutate(slope = sprintf("%.4f", slope));
+top_fast <- country_trends %>% arrange(slope) %>% head(10) %>% mutate(slope = sprintf("%.4f", slope));
 cat("ТОП-10 стран с самым БЫСТРЫМ демографическим переходом:\n");
 print(top_fast);
 cat("\nТОП-10 стран с самым МЕДЛЕННЫМ переходом:\n");
 print(top_slow); 
 ```
-### 6.3. Прогноз: когда страны достигнут порога «развитых» (PC1 > 0)
+### 6.3. Прогноз: когда страны достигнут порога «развитых» (PC1 < 0)
 ```{r forecast}
-forecast_threshold <- function(country_name, threshold = 0) { country_data <- pca_data %>% filter(Country == country_name);
-if (nrow(country_data) < 10) return(NA);
-model <- lm(PC1 ~ Year, data = country_data);
-coef <- coef(model);
-forecast_year <- (threshold - coef[1]) / coef[2];
-return(forecast_year) };
-forecasts <- country_trends %>% rowwise() %>% mutate(forecast_year = forecast_threshold(Country, threshold = 0)) %>% filter(!is.na(forecast_year), forecast_year > 2016, forecast_year < 2100) %>% arrange(forecast_year);
-forecast_plot <- ggplot(forecasts %>% head(20), aes(x = reorder(Country, forecast_year), y = forecast_year)) + geom_point(size = 3, color = "steelblue") + geom_hline(yintercept = 2016, linetype = "dashed", color = "red") + geom_hline(yintercept = 2050, linetype = "dashed", color = "gray50") + coord_flip() + labs(title = "Прогноз достижения порога развитых стран (PC1 > 0)", subtitle = "На основе линейного тренда 1960-2016", x = "Страна", y = "Год прогноза") + theme_minimal() + theme(axis.text.y = element_text(size = 8));
+library(minpack.lm)
+
+forecast_threshold <- function(country_name, threshold = 0) {
+  d <- pca_data %>% filter(Country == country_name)
+  if (nrow(d) < 10) return(NA_real_)
+
+  fit <- try(nlsLM(PC1 ~ SSfpl(Year, A, B, xmid, scal), data = d), silent = TRUE)
+  if (inherits(fit, "try-error")) return(NA_real_)
+
+  f <- function(t) predict(fit, newdata = data.frame(Year = t)) - threshold
+  if (f(2017) * f(2216) > 0) return(NA_real_)      # порог недостижим (за асимптотой)
+  uniroot(f, c(2017, 2216))$root                    # год пересечения
+}
+forecasts <- country_trends %>% rowwise() %>% mutate(forecast_year = forecast_threshold(Country, threshold = 0)) %>% filter(!is.na(forecast_year), forecast_year > 2020, forecast_year < 2085) %>% arrange(forecast_year);
+forecast_plot <- ggplot(forecasts %>% head(20), aes(x = reorder(Country, forecast_year), y = forecast_year)) + geom_point(size = 3, color = "steelblue") + geom_hline(yintercept = 2020, linetype = "dashed", color = "red") + geom_hline(yintercept = 2085, linetype = "dashed", color = "gray50") + coord_flip() + labs(title = "Прогноз достижения порога развитых стран (PC1 < 0)", subtitle = "На основе тренда 1960-2016", x = "Страна", y = "Год прогноза") + theme_minimal() + theme(axis.text.y = element_text(size = 8));
 forecast_plot;
 ggsave("output/forecast.png", forecast_plot, width = 10, height = 8, dpi = 150); 
 ```
@@ -302,25 +310,21 @@ n_transitions <- nrow(country_trajectories) - nrow(stable_countries);
 ## Выводы
 
 1. PCA эффективно выделяет две главные оси развития:
- - PC1 (r pca_variance дисперсии) — уровень демографического перехода
+ - PC1 (`r pca_variance` дисперсии) — уровень демографического перехода
  - PC2 — демографический масштаб (размер страны)
 
-2. Четыре устойчивых кластера отражают классические стадии демографического перехода:
- - Развивающиеся → Переходные → Развитые (+ крупные страны как отдельная группа)
+2. Три из четыре устойчивых кластера отражают классические стадии демографического перехода:
+ - Развивающиеся → Переходные → Развитые (+ крупные страны и группы стран как отдельная группа)
 
-3. Большинство стран прошли последовательный путь развития (1 → 2 → 4). Лишь немногие сохранили стабильный кластер с 1960 года.
+3. Большинство стран прошли последовательный путь развития. Лишь немногие сохранили стабильный кластер с 1960 года.
 
-4. Прогноз на основе линейных трендов позволяет оценить, когда развивающиеся страны достигнут показателей развитых — что критически важно для планирования международной помощи и инвестиций.
+4. Прогноз на основе трендов позволяет оценить, когда развивающиеся страны достигнут показателей развитых — что критически важно для планирования международной помощи и инвестиций.
 
 5. LDA анализ траекторий даёт воспроизводимый способ классифицировать страны по годам, а не только по усреднённым показателям.
 
 ## Технологии
 
 R, tidyverse, factoextra, gganimate, MASS, broom, patchwork, kableExtra
-
-## Структура
-
-03-demographics-clustering/ ├── README.md ├── analysis.Rmd ├── analysis.html ├── data/ │ ├── country_population.csv │ ├── fertility_rate.csv │ └── life_expectancy.csv └── output/  ├── cluster_plot.png  ├── cluster_profiles.png  ├── speed_distribution.png  ├── forecast.png  └── cluster_transitions.gif 
 
 ## Как запустить
 
@@ -330,10 +334,8 @@ R, tidyverse, factoextra, gganimate, MASS, broom, patchwork, kableExtra
 4. Нажмите Knit (Ctrl+Shift+K)
 5. Получите обновлённый analysis.html со всеми графиками
 
-Время выполнения: ~5-10 минут (без анимации). С анимацией gganimate — около 15-20 минут.
-
 ## Автор
 
-**[Вячеслав AKA Zo2uEv7lPR]
+**[Вячеслав AKA Zo2uEv7lPR]**
 - Telegram: @Zo2uEv7lPR
 - Email: Zo2uEv7lPR@yandex.ru
