@@ -1,1 +1,512 @@
+---
+title: "Сравнение архитектур нейросетей для классификации изображений: MLP, CNN, LSTM"
+author: "Data Analysis Portfolio"
+date: "2026"
+output:
+ html_document:
+ toc: true
+ toc_float: true
+ theme: flatly
+ highlight: tango
+ code_folding: hide
+---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  out.width = "100%"
+)
+```
+## О задаче
+
+Автоматическая классификация изображений фруктов по трём архитектурам нейронных сетей: MLP (полносвязная), CNN (свёрточная), LSTM (рекуррентная на спиральных патчах). Задача — сравнить эффективность разных индуктивных смещений на одних и тех же данных при одинаковом бюджете параметров (1.5 млн).
+
+Данные: изображения фруктов, размер 128×128×3, несколько классов. Разделение: 60% обучение, 20% валидация, 20% тест.
+
+Подход:
+- 3 архитектуры с одинаковым числом параметров (1.5 млн)
+- Нормализация и аугментация внутри модели
+- LSTM с кастомным слоем SpiralPatchify — патчи подаются по спирали от центра
+- Ранняя остановка по val_loss с patience = 5
+- Уменьшение скорости обучения при плато
+- Оценка на тестовой выборке через Confusion Matrix
+
+```{r libraries}
+# Установка пакетов (выполнить один раз при первом запуске)
+# install.packages(c("keras3", "reticulate", "tidyverse", "caret", "kableExtra"))
+
+# Настройка окружения для Keras 3
+Sys.setenv(KERAS_BACKEND = "tensorflow")
+Sys.unsetenv("TF_USE_LEGACY_KERAS")
+Sys.setenv(TF_USE_LEGACY_KERAS = "0")
+Sys.setenv(TF_CPP_MIN_LOG_LEVEL = "2")
+Sys.setenv(TF_ENABLE_ONEDNN_OPTS = "0")
+
+library(keras3)
+library(reticulate)
+library(tidyverse)
+library(caret)
+library(kableExtra)
+
+if (!dir.exists("output")) dir.create("output")
+set.seed(42)
+
+# Хелперы форматирования
+fmt_acc <- function(x) sprintf("%.1f%%", x * 100)
+fmt_params <- function(x) format(x, big.mark = " ")
+```
+## 1. Подготовка данных
+
+> Примечание: датасет не включён в репозиторий. Изображения фруктов должны находиться в папке Data/train/train/ с подпапками по классам.
+
+```{r data-prep}
+SEED <- 42L
+IMG_SIZE <- 128L
+BATCH_SIZE <- 32L
+AUTOTUNE <- -1L
+
+source_dir <- file.path("Data", "train", "train")
+split_dir <- file.path("Data", "split")
+train_dir <- file.path(split_dir, "train")
+val_dir <- file.path(split_dir, "val")
+test_dir <- file.path(split_dir, "test")
+
+# Разделение данных выполняется один раз при первом запуске
+# и сохраняется на диск. Повторный запуск пропускает этот шаг.
+if (!dir.exists(split_dir)) {
+  cat("Создание разбиения данных...\n")
+  train_ratio <- 0.60
+  val_ratio <- 0.20
+  classes <- list.dirs(source_dir, recursive = FALSE, full.names = FALSE)
+  
+  for (cls in classes) {
+    class_dir <- file.path(source_dir, cls)
+    files <- list.files(class_dir, pattern = "\\\\.(jpg|jpeg|png|bmp|webp)$",full.names = TRUE, ignore.case = TRUE)
+    if (length(files) < 5) stop("Слишком мало изображений для класса: ", cls)
+    files <- sample(files)
+    n <- length(files)
+    n_train <- floor(n * train_ratio)
+    n_val <- floor(n * val_ratio)
+    idx <- seq_along(files)
+    
+    dirs <- c(
+      train = file.path(split_dir, "train", cls),
+      val = file.path(split_dir, "val", cls),
+      test = file.path(split_dir, "test", cls)
+      )
+    lapply(dirs, function(d) dir.create(d, recursive = TRUE, showWarnings = FALSE))
+    
+    file.copy(files[idx <= n_train], dirs["train"])
+    file.copy(files[idx > n_train & idx <= (n_train + n_val)], dirs["val"])
+    file.copy(files[idx > (n_train + n_val)], dirs["test"])
+    }
+  }
+
+class_names <- sort(list.dirs(train_dir, recursive = FALSE, full.names = FALSE))
+num_classes <- length(class_names)
+cat("Классов:", num_classes, "\n")
+cat("Имена классов:", paste(class_names, collapse = ", "), "\n")
+```
+
+```{r data-loading}
+train_ds <- keras3::image_dataset_from_directory(
+  directory = train_dir,
+  image_size = c(IMG_SIZE, IMG_SIZE),
+  batch_size = BATCH_SIZE,
+  label_mode = "categorical",
+  shuffle = TRUE,
+  seed = SEED
+)
+
+val_ds <- keras3::image_dataset_from_directory(
+  directory = val_dir,
+  image_size = c(IMG_SIZE, IMG_SIZE),
+  batch_size = BATCH_SIZE,
+  label_mode = "categorical",
+  shuffle = FALSE
+)
+
+test_ds <- keras3::image_dataset_from_directory(
+  directory = test_dir,
+  image_size = c(IMG_SIZE, IMG_SIZE),
+  batch_size = BATCH_SIZE,
+  label_mode = "categorical",
+  shuffle = FALSE
+)
+
+train_ds <- train_ds$prefetch(AUTOTUNE)
+val_ds <- val_ds$prefetch(AUTOTUNE)
+test_ds <- test_ds$prefetch(AUTOTUNE)
+```
+
+## 2. Кастомный слой: спиральные патчи для LSTM
+
+Идея: вместо стандартной растеризации изображения по строкам, мы разбиваем его на патчи и подаём в LSTM по спирали от центра. Это позволяет модели сначала увидеть наиболее информативную часть изображения, а затем переходить к периферии.
+
+```{r source-patchify}
+reticulate::source_python("spiral_patchify.py")
+```
+
+## 3. Создание моделей
+
+Все три модели имеют одинаковое число параметров (1.5 млн) для честного сравнения. Нормализация /255 и аугментация встроены в каждую модель через layer_rescaling и случайные слои.
+
+```{r models-creation}
+input_shape <- c(IMG_SIZE, IMG_SIZE, 3L)
+
+add_augmentation <- function(x) {
+  x %>%
+    layer_random_flip("horizontal") %>% 
+    layer_random_rotation(0.05)
+  }
+
+# MLP
+create_mlp_model <- function(input_shape, n_classes, augment = FALSE) {
+  inputs <- layer_input(shape = input_shape, name = "input")
+  x <- layer_rescaling(scale = 1 / 255.0, name = "rescaling")(inputs)
+  if (augment) x <- add_augmentation(x)
+  x <- layer_flatten(name = "flatten")(x)
+  x <- layer_dropout(rate = 0.25)(x)
+  x <- layer_dense(units = 32, activation = "linear", use_bias = FALSE)(x)
+  x <- layer_batch_normalization()(x)
+  x <- layer_activation(activation = "swish")(x)
+  x <- layer_dropout(rate = 0.1)(x)
+  x <- layer_dense(units = 80, activation = "linear", use_bias = FALSE)(x)
+  x <- layer_batch_normalization()(x)
+  x <- layer_activation(activation = "swish")(x)
+  x <- layer_dropout(rate = 0.1)(x)
+  x <- layer_dense(units = 80, activation = "linear", use_bias = FALSE)(x)
+  x <- layer_batch_normalization()(x)
+  x <- layer_activation(activation = "swish")(x)
+  x <- layer_dropout(rate = 0.1)(x)
+  x <- layer_dense(units = 80, activation = "linear", use_bias = FALSE)(x)
+  x <- layer_batch_normalization()(x)
+  x <- layer_activation(activation = "swish")(x)
+  x <- layer_dropout(rate = 0.1)(x)
+  x <- layer_dense(units = 64, activation = "swish")(x)
+  outputs <- layer_dense(units = n_classes, activation = "softmax")(x)
+  keras_model(inputs = inputs, outputs = outputs, name = "MLP")
+}
+
+# CNN
+create_cnn_model <- function(input_shape, n_classes, augment = FALSE) {
+  inputs <- layer_input(shape = input_shape, name = "input")
+  x <- layer_rescaling(scale = 1 / 255.0, name = "rescaling")(inputs)
+  if (augment) x <- add_augmentation(x)
+  x <- layer_conv_2d(filters = 48, kernel_size = c(5, 5), activation = "swish", padding = "same")(x)
+  x <- layer_max_pooling_2d(pool_size = c(3, 3))(x)
+  x <- layer_conv_2d(filters = 48, kernel_size = c(3, 3), activation = "swish", padding = "same")(x)
+  x <- layer_max_pooling_2d(pool_size = c(2, 2))(x)
+  x <- layer_flatten()(x)
+  x <- layer_dropout(rate = 0.5)(x)
+  x <- layer_dense(units = 72, activation = "swish")(x)
+  x <- layer_dropout(rate = 0.3)(x)
+  x <- layer_dense(units = 128, activation = "swish")(x)
+  x <- layer_dropout(rate = 0.3)(x)
+  x <- layer_dense(units = 128, activation = "swish")(x)
+  x <- layer_dropout(rate = 0.3)(x)
+  x <- layer_dense(units = 128, activation = "swish")(x)
+  x <- layer_dropout(rate = 0.3)(x)
+  x <- layer_dense(units = 64, activation = "swish")(x)
+  outputs <- layer_dense(units = n_classes, activation = "softmax")(x)
+  keras_model(inputs = inputs, outputs = outputs, name = "CNN")
+}
+
+# LSTM
+create_lstm_model <- function(input_shape, n_classes, patch_size = 16L, augment = FALSE) {
+  inputs <- layer_input(shape = input_shape, name = "input")
+  x <- layer_rescaling(scale = 1 / 255.0, name = "rescaling")(inputs)
+  if (augment) x <- add_augmentation(x)
+  spiral_layer <- reticulate::py$SpiralPatchify(patch_size = as.integer(patch_size), name = "spiral_patchify")
+  x <- spiral_layer(x)
+  x <- layer_lstm(units = 256, return_sequences = TRUE, dropout = 0.2)(x)
+  x <- layer_dropout(rate = 0.2)(x)
+  x <- layer_lstm(units = 192, return_sequences = FALSE, dropout = 0.2)(x)
+  x <- layer_dropout(rate = 0.2)(x)
+  x <- layer_dense(units = 384, activation = "swish")(x)
+  x <- layer_batch_normalization()(x)
+  x <- layer_dropout(rate = 0.1)(x)
+  x <- layer_dense(units = 256, activation = "swish")(x)
+  x <- layer_batch_normalization()(x)
+  x <- layer_dropout(rate = 0.1)(x)
+  x <- layer_dense(units = 64, activation = "swish")(x)
+  x <- layer_batch_normalization()(x)
+  outputs <- layer_dense(units = n_classes, activation = "softmax")(x)
+  keras_model(inputs = inputs, outputs = outputs, name = "LSTM")
+}
+
+model_mlp <- create_mlp_model(input_shape, num_classes, augment = TRUE)
+model_cnn <- create_cnn_model(input_shape, num_classes, augment = TRUE)
+model_lstm <- create_lstm_model(input_shape, num_classes, patch_size = 16L, augment = TRUE)
+
+cat("Параметров MLP:", fmt_params(model_mlp$count_params()), "\n")
+cat("Параметров CNN:", fmt_params(model_cnn$count_params()), "\n")
+cat("Параметров LSTM:", fmt_params(model_lstm$count_params()), "\n")
+```
+
+## 4. Обучение моделей
+
+Все модели обучаются с одинаковыми настройками: Adam(lr=0.002), categorical_crossentropy, ранняя остановка по val_loss с patience=5, уменьшение lr при плато.
+
+```{r training, results='hide'}
+train_model_ds <- function(model, model_name, train_ds, val_ds, epochs = 30L) {
+  cat("\n", strrep("=", 50), "\n", sep = "")
+  cat("Обучение:", model_name, "\n")
+  cat(strrep("=", 50), "\n", sep = "")
+  
+  model$compile(
+    optimizer = optimizer_adam(learning_rate = 0.002),
+    loss = "categorical_crossentropy",
+    metrics = list("accuracy")
+  )
+  
+  callbacks <- list(
+    callback_early_stopping(
+      monitor = "val_loss",
+      patience = 8L,
+      restore_best_weights = TRUE,
+      verbose = 0L
+    ),
+    
+    callback_reduce_lr_on_plateau(
+      monitor = "val_loss",
+      factor = 0.5,
+      patience = 3L,
+      min_lr = 1e-6,
+      verbose = 0L
+    )
+  )
+  
+  history <- model$fit(
+    train_ds,
+    epochs = epochs,
+    validation_data = val_ds,
+    callbacks = callbacks,
+    verbose = 0L
+  )
+  
+  return(history)
+}
+
+hist_cnn <- train_model_ds(model_cnn, "CNN", train_ds, val_ds, epochs = 100L)
+hist_mlp <- train_model_ds(model_mlp, "MLP", train_ds, val_ds, epochs = 100L)
+hist_lstm <- train_model_ds(model_lstm, "LSTM", train_ds, val_ds, epochs = 100L)
+```
+
+```{r results-extraction}
+get_results <- function(hist, name, model_params) {
+  df <- data.frame(
+    epoch = seq_along(hist$history$accuracy),
+    train_acc = hist$history$accuracy,
+    val_acc = hist$history$val_accuracy,
+    train_loss = hist$history$loss,
+    val_loss = hist$history$val_loss
+  )
+  
+  result <- data.frame(
+    Model = name,
+    Best_Epoch = which.min(df$val_loss),
+    Max_Train_Acc = round(max(df$train_acc), 4),
+    Max_Val_Acc = round(max(df$val_acc), 4),
+    Final_Val_Loss = round(df$val_loss[nrow(df)], 4),
+    Params = model_params
+  )
+  
+  return(list(df = df, result = result))
+}
+
+cnn_res <- get_results(hist_cnn, "CNN", model_cnn$count_params())
+mlp_res <- get_results(hist_mlp, "MLP", model_mlp$count_params())
+lstm_res <- get_results(hist_lstm, "LSTM", model_lstm$count_params())
+
+df_all <- bind_rows(
+  cnn_res$df %>% mutate(Model = "CNN"),
+  mlp_res$df %>% mutate(Model = "MLP"),
+  lstm_res$df %>% mutate(Model = "LSTM")
+)
+
+results <- bind_rows(
+  cnn_res$result,
+  mlp_res$result,
+  lstm_res$result
+) %>% arrange(desc(Max_Val_Acc))
+```
+
+## 5. Кривые обучения
+
+```{r accuracy-curve}
+df_long <- df_all %>%
+  pivot_longer(
+    cols = c(train_acc, val_acc),
+    names_to = "Dataset",
+    values_to = "Accuracy"
+  ) %>% 
+  mutate(
+    Dataset = case_when(
+      Dataset == "train_acc" ~ "Обучающая",
+      Dataset == "val_acc" ~ "Валидационная"
+    ),
+    Dataset = factor(Dataset, levels = c("Обучающая", "Валидационная"))
+  )
+
+p_acc <- ggplot(df_long, aes(x = epoch, y = Accuracy, color = Dataset)) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ Model, scales = "free_y", ncol = 1) +
+  scale_color_manual(values = c("Обучающая" = "#2E86AB", "Валидационная" = "#E94F37")) +
+  labs(title = "Точность обучения: Сравнение архитектур", x = "Эпоха", y = "Accuracy", color = "Выборка") +
+  theme_minimal() +
+  theme(legend.position = "bottom",plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+  strip.text = element_text(size = 12, face = "bold"))
+
+print(p_acc)
+ggsave("output/accuracy_curve.png", p_acc, width = 10, height = 12, dpi = 150)
+```
+
+```{r loss-curve}
+df_loss_long <- df_all %>%
+ pivot_longer(
+ cols = c(train_loss, val_loss),
+ names_to = "Dataset",
+ values_to = "Loss"
+ ) %>%
+ mutate(
+ Dataset = case_when(
+ Dataset == "train_loss" ~ "Обучающая",
+ Dataset == "val_loss" ~ "Валидационная"
+ ),
+ Dataset = factor(Dataset, levels = c("Обучающая", "Валидационная"))
+ )
+
+p_loss <- ggplot(df_loss_long, aes(x = epoch, y = Loss, color = Dataset)) +
+ geom_line(linewidth = 1.2) +
+ facet_wrap(~ Model, scales = "free_y", ncol = 1) +
+ scale_color_manual(values = c("Обучающая" = "#2E86AB", "Валидационная" = "#E94F37")) +
+ labs(title = "Лосс обучения: Сравнение архитектур",
+ x = "Эпоха", y = "Loss", color = "Выборка") +
+ theme_minimal() +
+ theme(
+ legend.position = "bottom",
+ plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+ strip.text = element_text(size = 12, face = "bold")
+ )
+
+print(p_loss)
+ggsave("output/loss_curve.png", p_loss, width = 10, height = 12, dpi = 150)
+```
+
+## 6. Оценка на тестовой выборке
+
+```{r test-predictions}
+reticulate::py_run_string("
+import numpy as np
+
+def get_predictions_keras(model, dataset, class_names):
+  all_images = []
+  all_labels = []
+  for batch in dataset:
+    all_images.append(batch[0].numpy())
+    all_labels.append(batch[1].numpy())
+    x_all = np.concatenate(all_images, axis=0)
+    y_all = np.concatenate(all_labels, axis=0)
+    probs = model.predict(x_all, verbose=0)
+    pred_indices = np.argmax(probs, axis=1)
+    true_indices = np.argmax(y_all, axis=1)
+    pred_labels = [class_names[i] for i in pred_indices]
+    true_labels = [class_names[i] for i in true_indices]
+  return true_labels, pred_labels
+")
+
+get_predictions <- function(model, dataset, class_names) {
+  result <- reticulate::py$get_predictions_keras(model, dataset, class_names)
+  return(data.frame(True = result, Predicted = result, stringsAsFactors = FALSE))
+}
+
+df_mlp <- get_predictions(model_mlp, test_ds, class_names)
+df_cnn <- get_predictions(model_cnn, test_ds, class_names)
+df_lstm <- get_predictions(model_lstm, test_ds, class_names)
+
+colnames(df_cnn) <- c("True", "Predicted")
+colnames(df_mlp) <- c("True", "Predicted")
+colnames(df_lstm) <- c("True", "Predicted")
+
+df_cnn$True <- factor(df_cnn$True, levels = class_names)
+df_cnn$Predicted <- factor(df_cnn$Predicted, levels = class_names)
+df_mlp$True <- factor(df_mlp$True, levels = class_names)
+df_mlp$Predicted <- factor(df_mlp$Predicted, levels = class_names)
+df_lstm$True <- factor(df_lstm$True, levels = class_names)
+df_lstm$Predicted <- factor(df_lstm$Predicted, levels = class_names)
+```
+
+```{r confusion-matrices}
+create_cm_plot <- function(df, model_name) {
+  cm_table <- table(df$True, df$Predicted)
+  cm_df <- as.data.frame(cm_table)
+  colnames(cm_df) <- c("True", "Predicted", "Count")
+
+ ggplot(cm_df, aes(x = True, y = Predicted, fill = Count)) +
+ geom_tile(color = "white", linewidth = 0.5) +
+ geom_text(aes(label = Count), size = 3, color = "black") +
+ scale_fill_gradient(low = "#ffffd9", high = "#8c2d04", name = "Кол-во") +
+ theme_minimal() +
+ theme(
+ axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+ axis.text.y = element_text(size = 7),
+ panel.grid = element_blank(),
+ legend.position = "right",
+ plot.title = element_text(hjust = 0.5, size = 14, face = "bold")
+ ) +
+ labs(title = paste("Confusion Matrix -", model_name),
+ x = "Истинный класс", y = "Предсказанный класс")
+}
+
+cm_cnn <- confusionMatrix(df_cnn$Predicted, df_cnn$True)
+cm_mlp <- confusionMatrix(df_mlp$Predicted, df_mlp$True)
+cm_lstm <- confusionMatrix(df_lstm$Predicted, df_lstm$True)
+
+p_cnn <- create_cm_plot(df_cnn, "CNN")
+p_mlp <- create_cm_plot(df_mlp, "MLP")
+p_lstm <- create_cm_plot(df_lstm, "LSTM")
+
+print(p_cnn)
+print(p_mlp)
+print(p_lstm)
+
+ggsave("output/confusion_matrix_CNN.png", p_cnn, width = 12, height = 10, dpi = 150)
+ggsave("output/confusion_matrix_MLP.png", p_mlp, width = 12, height = 10, dpi = 150)
+ggsave("output/confusion_matrix_LSTM.png", p_lstm, width = 12, height = 10, dpi = 150)
+```
+
+## 7. Итоговая таблица результатов
+
+```{r summary-table}
+results_summary <- tibble(
+  Model = results$Model,
+  Accuracy = fmt_acc(results$Max_Val_Acc),
+  Val_Loss = sprintf("%.4f", results$Final_Val_Loss),
+  Best_Epoch = results$Best_Epoch,
+  Params = fmt_params(results$Params)
+)
+
+results_summary %>% 
+  kable(caption = "Сводная таблица результатов (все метрики на тестовой выборке)",
+        align = "lcccc") %>% kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+# Обсуждение результатов и ограничения данных
+
+Аномально высокая точность всех моделей (99.1% – 100.0%) на тестовой выборке объясняется спецификой сбора датасета: каждый класс представлен 400–800 фотографиями **одного и того же физического объекта**, снятого с разных ракурсов. 
+
+Это приводит к нескольким важным эффектам:
+1. **Переход к Instance Recognition**: модели решают задачу идентификации конкретного экземпляра, а не обобщения категории. Нейросети запоминают уникальные текстуры и блики конкретного фрукта.
+2. **Утечка на уровне объекта (Object-level leakage)**: при случайном (image-level) разделении данных, в train и test попадают фотографии одного и того же фрукта. Тестовая выборка не является строго независимой, что завышает итоговые метрики.
+3. **Динамика обучения**: CNN должна сходится быстрее всего, так как свёрточные фильтры наиболее эффективно выделяют локальные уникальные признаки конкретного объекта. MLP и LSTM должно потребовалось больше эпох для запоминания плоских векторов и спиральных последовательностей, но их ёмкости (~1.6 млн параметров) хватает для идеального запоминания (меморизации) датасета.
+
+**Рекомендация для production-решений**: 
+Для корректной оценки моделей на подобных данных необходимо использовать **object-level split** — разделять данные не по случайным изображениям, а по объектам (например, фрукты №1-№5 идут в train, а фрукт №6 целиком идёт в test). Это заставит модели учить истинные инвариантные признаки категорий, а точность упадёт до реалистичных значений.
+
+---
+Технологии: R, Keras 3, TensorFlow, reticulate, tidyverse, ggplot2, caret;
