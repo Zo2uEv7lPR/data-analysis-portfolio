@@ -57,7 +57,7 @@ R, Keras 3, TensorFlow, reticulate, Python, tidyverse, ggplot2, caret, kableExtr
 
 ## Как запустить
 
-1. Скачайте датасет изображений фруктов (классы по отдельным папкам)
+1. Скачайте датасет изображений фруктов (классы по отдельным папкам), либо готовый с [Kaggle](https://www.kaggle.com/datasets/sshikamaru/fruit-recognition)
 2. Поместите изображения в `Data/train/train/` (по одной подпапке на класс)
 3. Установите зависимости: R — `keras3`, `reticulate`, `tidyverse`, `caret`, `kableExtra`; Python — `tensorflow` и `keras`
 4. Откройте `analysis.Rmd` в RStudio
