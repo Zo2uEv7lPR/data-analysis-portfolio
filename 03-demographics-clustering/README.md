@@ -47,7 +47,7 @@ R, tidyverse, factoextra, plotly, fmsb, cluster, gganimate, MASS, broom, patchwo
 
 ## Как запустить
 
-1. Скачайте три датасета с [Kaggle](https://www.kaggle.com/datasets/gemartin/world-bank-data-1960-to-2016) или World Bank Data: `country_population.csv`, `fertility_rate.csv`, `life_expectancy.csv`
+1. Скачайте три датасета с [Kaggle](https://www.kaggle.com/datasets/gemartin/world-bank-data-1960-to-2016): `country_population.csv`, `fertility_rate.csv`, `life_expectancy.csv`
 2. Поместите CSV-файлы в папку `data/`
 3. Откройте `analysis.Rmd` в RStudio
 4. Нажмите **Knit** (Ctrl+Shift+K)
